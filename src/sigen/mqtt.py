@@ -193,11 +193,16 @@ class SigenMQTT:
         await client.publish("openapi/subscription/alarm", sub_payload)
         logger.info("Subscribed to alarm events")
 
-        # Subscribe to the actual topic channels
+        # Subscribe to the allocated topic channels (topics use app_key)
         for system_id in self.system_ids:
-            await client.subscribe(f"openapi/period/{self.app_identifier}/{system_id}")
-            await client.subscribe(f"openapi/change/{self.app_identifier}/{system_id}")
-            await client.subscribe(f"openapi/alarm/{self.app_identifier}/{system_id}")
+            topics = [
+                f"openapi/period/{self.app_key}/{system_id}",
+                f"openapi/change/{self.app_key}/{system_id}",
+                f"openapi/alarm/{self.app_key}/{system_id}",
+            ]
+            for t in topics:
+                await client.subscribe(t)
+            logger.info("Subscribed to topics for %s (app_key=%s)", system_id, self.app_key)
 
     async def listen(
         self,
@@ -218,7 +223,7 @@ class SigenMQTT:
                     hostname=self.broker,
                     port=self.port,
                     tls_context=tls_ctx,
-                    username=self.app_identifier,
+                    username=self.app_key,
                     password=token,
                 ) as client:
                     self._mqtt_client = client
@@ -229,6 +234,7 @@ class SigenMQTT:
 
                     async for message in client.messages:
                         topic = str(message.topic)
+                        logger.debug("MQTT message on topic: %s (%d bytes)", topic, len(message.payload or b""))
                         try:
                             payload = json.loads(message.payload)
                         except (json.JSONDecodeError, TypeError):
