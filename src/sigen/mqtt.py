@@ -139,6 +139,7 @@ class SigenMQTT:
         self._mqtt_client: aiomqtt.Client | None = None
         self._connected = False
         self._listen_task: asyncio.Task | None = None
+        self._telemetry_logged = False
 
     @property
     def connected(self) -> bool:
@@ -272,6 +273,11 @@ class SigenMQTT:
         entries = payload if isinstance(payload, list) else [payload]
         for entry in entries:
             try:
+                # Log raw fields on first message for diagnostics
+                if not self._telemetry_logged:
+                    self._telemetry_logged = True
+                    values = entry.get("value", {})
+                    logger.info("Telemetry fields (%d): %s", len(values), ", ".join(sorted(values.keys())))
                 data = TelemetryData.from_mqtt_payload(entry)
                 await callback(data)
             except Exception as e:
