@@ -150,8 +150,12 @@ class NorthboundClient:
                     logger.info("Offboarded system %s: %s", item.get("systemId"), item.get("result"))
                 return data
 
-    async def query_mode(self, system_id: str) -> int:
-        """GET openapi/instruction/{systemId}/settings → mode int."""
+    async def query_mode(self, system_id: str) -> dict:
+        """GET openapi/instruction/{systemId}/settings → full response body.
+
+        Returns the raw API response dict. Caller should extract
+        data.energyStorageOperationMode if code==0.
+        """
         token = await self.ensure_token()
         url = f"{self.base_url}openapi/instruction/{system_id}/settings"
         headers = {"Authorization": f"Bearer {token}"}
@@ -160,7 +164,7 @@ class NorthboundClient:
                 body = await resp.json()
                 if body.get("code") != 0:
                     raise SigenAPIError(f"Query mode failed: {body}")
-                return body["data"]["energyStorageOperationMode"]
+                return body
 
     async def switch_mode(self, system_id: str, mode: int) -> dict:
         """PUT openapi/instruction/settings — set operating mode."""
