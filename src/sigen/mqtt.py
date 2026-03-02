@@ -161,6 +161,10 @@ class SigenMQTT:
     def _build_tls_context(self) -> ssl.SSLContext:
         """Build TLS context from certificate paths."""
         ctx = ssl.create_default_context(cafile=self.ca_cert_path)
+        # Sigen's CA cert lacks keyUsage extension; OpenSSL 3.4+ rejects this
+        # under strict mode. Relax the check.
+        if hasattr(ssl, "VERIFY_X509_STRICT"):
+            ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
         if self.client_cert_path and self.client_key_path:
             ctx.load_cert_chain(self.client_cert_path, self.client_key_path)
         return ctx
@@ -203,7 +207,11 @@ class SigenMQTT:
             ]
             for t in topics:
                 await client.subscribe(t)
-            logger.info("Subscribed to topics for %s (app_key=%s)", system_id, self.app_key)
+                logger.info("MQTT SUBSCRIBE: %s", t)
+        logger.info(
+            "Subscription setup complete: app_key=%s app_identifier=%s systems=%s",
+            self.app_key, self.app_identifier, self.system_ids,
+        )
 
     async def listen(
         self,
@@ -231,15 +239,34 @@ class SigenMQTT:
                     self._connected = True
                     logger.info("MQTT connected to %s:%d", self.broker, self.port)
 
+                    # Onboard systems (required before instruction endpoints work)
+                    if self._nb_client and self.system_ids:
+                        try:
+                            result = await self._nb_client.onboard(self.system_ids)
+                            for item in result:
+                                sid = item.get("systemId")
+                                ok = item.get("result")
+                                if ok:
+                                    logger.info("System %s onboarded", sid)
+                                else:
+                                    logger.warning("System onboard issue: %s codes=%s", sid, item.get("codeList"))
+                        except Exception as e:
+                            logger.warning("System onboard failed (non-fatal): %s", e)
+
                     await self._subscribe(client)
 
+                    msg_count = 0
                     async for message in client.messages:
+                        msg_count += 1
                         topic = str(message.topic)
-                        logger.debug("MQTT message on topic: %s (%d bytes)", topic, len(message.payload or b""))
+                        logger.debug(
+                            "MQTT msg #%d topic=%s (%d bytes)",
+                            msg_count, topic, len(message.payload or b""),
+                        )
                         try:
                             payload = json.loads(message.payload)
                         except (json.JSONDecodeError, TypeError):
-                            logger.warning("Non-JSON MQTT message on %s", topic)
+                            logger.warning("Non-JSON MQTT message on %s: %s", topic, message.payload[:200] if message.payload else b"")
                             continue
 
                         if "/period/" in topic and on_telemetry:
@@ -248,6 +275,8 @@ class SigenMQTT:
                             await on_system(payload)
                         elif "/alarm/" in topic and on_alarm:
                             await on_alarm(payload)
+                        else:
+                            logger.info("MQTT unhandled topic=%s payload_keys=%s", topic, list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
 
             except aiomqtt.MqttError as e:
                 self._connected = False
@@ -292,10 +321,16 @@ class SigenMQTT:
         if not self._mqtt_client or not self._connected:
             raise RuntimeError("MQTT not connected")
         token = await self._ensure_token()
-        payload = json.dumps({
+        payload_obj = {
             "accessToken": token,
             "commands": commands,
-        })
+        }
+        payload = json.dumps(payload_obj)
+        logger.info(
+            "Publishing %d commands to openapi/instruction/command (%d bytes)",
+            len(commands), len(payload),
+        )
+        logger.debug("Command payload: %s", json.dumps({"commands": commands}, indent=2))
         await self._mqtt_client.publish("openapi/instruction/command", payload)
 
     async def disconnect(self) -> None:
